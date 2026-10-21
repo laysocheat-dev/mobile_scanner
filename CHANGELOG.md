@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+* [Web] Fix Safari QR decoding starvation when video frame callbacks report
+  `mediaTime=0`. Frame freshness now compares `currentTime` against its own
+  baseline while still requiring a frame callback and rejecting frozen frames.
+
+* [Web] Add rate-limited ScannerTrace diagnostics for backend selection, frame
+  freshness, decode attempts and errors. Forward decoder failures to the barcode
+  error stream without logging QR payloads.
+  ScannerTrace uses synchronous console output in all build modes, including
+  release, independently of the application's `debugPrint` override.
+
+## Unreleased
+
+* [Web] Discard captures while paused instead of buffering them for resume.
+  Ignore in-flight polling decodes from before a pause, resume, or restart.
+* [Web] Wait for a newly presented video frame after resume instead of decoding
+  the frozen pre-pause image when `play()` completes. Applies to native,
+  zxing-wasm, and ZXing JS readers.
+
 ## [7.4.2](https://github.com/juliansteenbakker/mobile_scanner/compare/v7.4.1...v7.4.2) (2026-09-10)
 
 

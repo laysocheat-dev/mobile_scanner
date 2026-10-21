@@ -52,6 +52,7 @@ class MobileScannerWeb extends MobileScannerPlatform {
 
   /// The subscription for the barcode stream.
   StreamSubscription<Object?>? _barcodesSubscription;
+  bool _acceptCaptures = false;
 
   /// The container div element for the camera view.
   late HTMLDivElement _divElement;
@@ -434,6 +435,7 @@ class MobileScannerWeb extends MobileScannerPlatform {
     if (_barcodeReader != null) {
       if (_barcodeReader!.paused ?? false) {
         await _barcodeReader?.resume();
+        _acceptCaptures = true;
 
         final cameraDirection = _settingsDelegate.getCameraDirection(
           _barcodeReader?.videoStream,
@@ -454,11 +456,6 @@ class MobileScannerWeb extends MobileScannerPlatform {
           message: MobileScannerErrorCode.controllerAlreadyInitialized.message,
         ),
       );
-    }
-
-    // If the previous state is a pause, reset scanner.
-    if (_barcodesSubscription != null && _barcodesSubscription!.isPaused) {
-      await stop();
     }
 
     // Select the barcode reader based on the preferred backend.
@@ -532,9 +529,10 @@ class MobileScannerWeb extends MobileScannerPlatform {
     }
 
     try {
+      _acceptCaptures = true;
       _barcodesSubscription = _barcodeReader?.detectBarcodes().listen(
         (barcode) {
-          if (_barcodesController.isClosed) {
+          if (!_acceptCaptures || _barcodesController.isClosed) {
             return;
           }
 
@@ -579,12 +577,14 @@ class MobileScannerWeb extends MobileScannerPlatform {
 
   @override
   Future<void> pause() async {
-    _barcodesSubscription?.pause();
+    // Keep draining the stream: pausing the subscription buffers stale results.
+    _acceptCaptures = false;
     _barcodeReader?.pause();
   }
 
   @override
   Future<void> stop() async {
+    _acceptCaptures = false;
     // Ensure the barcode scanner is stopped, by cancelling the subscription.
     await _barcodesSubscription?.cancel();
     _barcodesSubscription = null;

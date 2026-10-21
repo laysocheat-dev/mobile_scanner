@@ -42,6 +42,7 @@ final class ZXingBarcodeReader extends BarcodeReader {
 
   /// The internal barcode reader.
   ZXingBrowserMultiFormatReader? _reader;
+  final VideoFrameFreshness _frameFreshness = VideoFrameFreshness();
 
   @override
   bool get isScanning => videoStream != null;
@@ -139,6 +140,7 @@ final class ZXingBarcodeReader extends BarcodeReader {
             }
 
             if (result != null) {
+              if (!_frameFreshness.takeFrame()) return;
               var barcode = result.toBarcode;
 
               // Check the scan window using raw camera coordinates (before
@@ -165,6 +167,7 @@ final class ZXingBarcodeReader extends BarcodeReader {
       // `MobileScannerWeb.stop()`. This avoids both leaving the barcode scanner
       // running and a memory leak for the stream subscription.
       ..onCancel = () async {
+        _frameFreshness.stop();
         _reader?.stopContinuousDecode.callAsFunction(_reader);
         _reader?.reset.callAsFunction(_reader);
         await controller.close();
@@ -198,22 +201,29 @@ final class ZXingBarcodeReader extends BarcodeReader {
     );
 
     await _prepareVideoElement(videoElement, videoStream);
+    _frameFreshness.start(videoElement);
   }
 
   @override
   bool? get paused => _reader?.videoElement?.paused;
 
   @override
-  void pause() => _reader?.videoElement?.pause();
+  void pause() {
+    _frameFreshness.stop();
+    _reader?.videoElement?.pause();
+  }
 
   @override
   Future<void> resume() async {
-    final result = _reader?.videoElement?.play();
-    await result?.toDart;
+    final video = _reader?.videoElement;
+    if (video == null) return;
+    _frameFreshness.start(video);
+    await video.play().toDart;
   }
 
   @override
   Future<void> stop() async {
+    _frameFreshness.stop();
     _onMediaTrackSettingsChanged = null;
     _scanWindow = null;
     _reader?.stopContinuousDecode.callAsFunction(_reader);

@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:js_interop';
 import 'dart:ui';
 
-import 'package:meta/meta.dart';
+import 'package:flutter/foundation.dart';
+import 'package:mobile_scanner/src/mobile_scanner_exception.dart';
 import 'package:mobile_scanner/src/objects/barcode.dart';
 import 'package:mobile_scanner/src/objects/barcode_capture.dart';
 import 'package:mobile_scanner/src/objects/start_options.dart';
@@ -44,6 +45,9 @@ abstract base class PollingBarcodeReader extends BarcodeReader {
   /// Guard against overlapping decode calls when a frame takes longer to
   /// process than the configured interval.
   bool _isDecoding = false;
+  int _decodeGeneration = 0;
+  final VideoFrameFreshness _frameFreshness = VideoFrameFreshness();
+  int _decodeErrors = 0;
 
   @override
   bool get isScanning => _videoStream != null;
@@ -66,11 +70,19 @@ abstract base class PollingBarcodeReader extends BarcodeReader {
   bool? get paused => _videoElement?.paused;
 
   @override
-  void pause() => _videoElement?.pause();
+  void pause() {
+    _decodeGeneration++;
+    _frameFreshness.stop();
+    _videoElement?.pause();
+  }
 
   @override
   Future<void> resume() async {
-    await _videoElement?.play().toDart;
+    _decodeGeneration++;
+    final video = _videoElement;
+    if (video == null) return;
+    _frameFreshness.start(video);
+    await video.play().toDart;
   }
 
   @override
@@ -110,6 +122,8 @@ abstract base class PollingBarcodeReader extends BarcodeReader {
     required web.HTMLVideoElement videoElement,
     required web.MediaStream videoStream,
   }) async {
+    _decodeGeneration++;
+    _decodeErrors = 0;
     _videoElement = videoElement;
     _videoStream = videoStream;
     _timeBetweenScansMs = options.detectionTimeoutMs;
@@ -119,6 +133,7 @@ abstract base class PollingBarcodeReader extends BarcodeReader {
     // Attach the stream to the video element and start playback.
     videoElement.srcObject = videoStream;
     await videoElement.play().toDart;
+    _frameFreshness.start(videoElement);
 
     final settings = _mediaTrackConstraintsDelegate.getSettings(videoStream);
 
@@ -141,6 +156,7 @@ abstract base class PollingBarcodeReader extends BarcodeReader {
       // scanner running and a memory leak for the stream subscription.
       ..onCancel = () async {
         _stopDecodeLoop();
+        _frameFreshness.stop();
         await controller.close();
       };
 
@@ -149,10 +165,28 @@ abstract base class PollingBarcodeReader extends BarcodeReader {
 
   @override
   Future<void> stop() async {
+    _decodeGeneration++;
+    _frameFreshness.stop();
     _stopDecodeLoop();
     _isDecoding = false;
     _onMediaTrackSettingsChanged = null;
     _scanWindow = null;
+
+    final videoElement = _videoElement;
+    final videoStream = _videoStream;
+
+    videoElement?.pause();
+
+    if (videoStream != null) {
+      for (final track in videoStream.getTracks().toDart) {
+        track.stop();
+      }
+    }
+
+    if (videoElement != null) {
+      videoElement.srcObject = null;
+    }
+
     _videoElement = null;
     _videoStream = null;
     disposeDecoder();
@@ -172,8 +206,19 @@ abstract base class PollingBarcodeReader extends BarcodeReader {
       _isDecoding = true;
       try {
         await _decodeAndEmit(controller);
-      } on Object catch (_) {
-        // Swallow per-frame errors so the loop keeps running.
+      } on Object catch (error, stackTrace) {
+        _decodeErrors++;
+        if (_decodeErrors == 1 || _decodeErrors % 100 == 0) {
+          if (!controller.isClosed) {
+            controller.addError(
+              MobileScannerBarcodeException(
+                'Web decoder failed (${error.runtimeType}). '
+                'See ScannerTrace for the stack trace.',
+              ),
+              stackTrace,
+            );
+          }
+        }
       } finally {
         _isDecoding = false;
       }
@@ -192,10 +237,19 @@ abstract base class PollingBarcodeReader extends BarcodeReader {
 
     if (video == null || controller.isClosed || video.paused) return;
     if (video.videoWidth == 0 || video.videoHeight == 0) return;
+    if (!_frameFreshness.takeFrame()) return;
 
+    final generation = _decodeGeneration;
     final results = await decodeFrame(video);
 
-    if (results.isEmpty || controller.isClosed) return;
+    // A decode can finish after pause/resume, even when video is playing again.
+    if (generation != _decodeGeneration ||
+        !identical(video, _videoElement) ||
+        video.paused ||
+        results.isEmpty ||
+        controller.isClosed) {
+      return;
+    }
 
     final barcodes = <Barcode>[];
 
